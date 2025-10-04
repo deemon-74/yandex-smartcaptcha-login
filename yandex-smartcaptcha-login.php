@@ -1,9 +1,9 @@
 <?php
 /**
  * Plugin Name: Yandex SmartCaptcha для входа и регистрации
- * Plugin URI: https://example.com/yandex-smartcaptcha-login
- * Description: Защита форм входа и регистрации с помощью Yandex SmartCaptcha.
- * Version: 1.0.0
+ * Plugin URI: https://kolibri-art.ru
+ * Description: Защита стандартных форм входа и регистрации WordPress с помощью Yandex SmartCaptcha.
+ * Version: 1.0.2
  * Author: Дмитрий Ермаков
  * Author URI: https://kolibri-art.ru
  * GitHub Plugin URI: https://github.com/deemon-74/yandex-smartcaptcha-login
@@ -11,11 +11,15 @@
  * Text Domain: ysc-login
  */
 
-if (!defined('ABSPATH')) exit;
+if (!defined('ABSPATH')) {
+    exit;
+}
 
-// === 1. Подключаем скрипт SmartCaptcha на страницах входа и регистрации ===
+// === 1. Подключаем скрипт SmartCaptcha на странице входа ===
 function ysc_login_enqueue_scripts() {
-    if (!in_array($GLOBALS['pagenow'], ['wp-login.php', 'wp-register.php'])) return;
+    if ($GLOBALS['pagenow'] !== 'wp-login.php') {
+        return;
+    }
 
     wp_enqueue_script(
         'smartcaptcha',
@@ -27,49 +31,84 @@ function ysc_login_enqueue_scripts() {
 }
 add_action('login_enqueue_scripts', 'ysc_login_enqueue_scripts');
 
-// === 2. Добавляем контейнер капчи на форму входа и регистрации ===
+// === 2. Выводим виджет капчи и управляем кнопкой отправки ===
 function ysc_add_captcha_to_login_form() {
     $sitekey = get_option('ysc_sitekey');
-    if (!$sitekey) return;
+    if (!$sitekey) {
+        return;
+    }
 
     echo '<div class="smart-captcha" data-sitekey="' . esc_attr($sitekey) . '" data-callback="yscOnSuccess"></div>';
     echo '<input type="hidden" name="smartcaptcha_token" id="smartcaptcha_token" value="">';
+
     ?>
     <script>
+    document.addEventListener('DOMContentLoaded', function () {
+        const submitBtn = document.getElementById('wp-submit');
+        if (submitBtn) {
+            submitBtn.disabled = true; // Блокируем до прохождения капчи
+        }
+    });
+
     function yscOnSuccess(token) {
         document.getElementById('smartcaptcha_token').value = token;
-        // Разблокируем кнопку, если нужно
-        const submitBtn = document.querySelector('#wp-submit');
-        if (submitBtn) submitBtn.disabled = false;
+        const submitBtn = document.getElementById('wp-submit');
+        if (submitBtn) {
+            submitBtn.disabled = false;
+        }
     }
     </script>
     <?php
 }
-add_action('login_form', 'ysc_add_captcha_to_login_form'); // для входа
-add_action('register_form', 'ysc_add_captcha_to_login_form'); // для регистрации (если включена)
+add_action('login_form', 'ysc_add_captcha_to_login_form');       // Форма входа
+add_action('register_form', 'ysc_add_captcha_to_login_form');   // Форма регистрации
 
-// === 3. Проверка токена при попытке входа ===
-function ysc_verify_login_captcha($user, $username, $password) {
-    if (!is_a($user, 'WP_User') && !is_wp_error($user)) {
-        // Проверяем только если ещё не ошибка
-        if (!ysc_verify_token_from_request()) {
-            return new WP_Error('smartcaptcha_failed', 'Пройдите проверку SmartCaptcha.');
-        }
+// === 3. Проверка капчи при отправке формы входа ===
+function ysc_block_login_without_captcha() {
+    // Пропускаем GET-запросы и пустые POST
+    if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+        return;
     }
-    return $user;
-}
-add_filter('authenticate', 'ysc_verify_login_captcha', 30, 3);
+    if (empty($_POST['log']) || empty($_POST['pwd'])) {
+        return;
+    }
 
-// === 4. Проверка токена при регистрации ===
-function ysc_verify_registration_captcha($errors) {
     if (!ysc_verify_token_from_request()) {
-        $errors->add('smartcaptcha_failed', 'Пройдите проверку SmartCaptcha.');
+        wp_die(
+            'Пройдите проверку SmartCaptcha.',
+            'Ошибка капчи',
+            [
+                'response'  => 400,
+                'back_link' => true,
+            ]
+        );
     }
-    return $errors;
 }
-add_filter('registration_errors', 'ysc_verify_registration_captcha');
+add_action('login_form_login', 'ysc_block_login_without_captcha');
 
-// === 5. Вспомогательная функция: получение и проверка токена ===
+// === 4. Проверка капчи при отправке формы регистрации ===
+function ysc_block_register_without_captcha() {
+    if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+        return;
+    }
+    if (empty($_POST['user_login']) || empty($_POST['user_email'])) {
+        return;
+    }
+
+    if (!ysc_verify_token_from_request()) {
+        wp_die(
+            'Пройдите проверку SmartCaptcha.',
+            'Ошибка капчи',
+            [
+                'response'  => 400,
+                'back_link' => true,
+            ]
+        );
+    }
+}
+add_action('login_form_register', 'ysc_block_register_without_captcha');
+
+// === 5. Серверная валидация токена через Yandex API ===
 function ysc_verify_token_from_request() {
     if (!isset($_POST['smartcaptcha_token']) || empty($_POST['smartcaptcha_token'])) {
         return false;
@@ -79,7 +118,7 @@ function ysc_verify_token_from_request() {
     $secret = get_option('ysc_secret');
 
     if (!$secret) {
-        error_log('Yandex SmartCaptcha: secret key не задан');
+        error_log('Yandex SmartCaptcha: secret key не задан в настройках.');
         return false;
     }
 
@@ -92,7 +131,7 @@ function ysc_verify_token_from_request() {
     ]);
 
     if (is_wp_error($response)) {
-        error_log('Yandex SmartCaptcha: ошибка при валидации токена: ' . $response->get_error_message());
+        error_log('Yandex SmartCaptcha: ошибка валидации токена: ' . $response->get_error_message());
         return false;
     }
 
@@ -100,12 +139,18 @@ function ysc_verify_token_from_request() {
     return !empty($body['status']) && $body['status'] === 'ok';
 }
 
-// === 6. Настройки в админке (sitekey и secret) ===
+// === 6. Настройки в админке WordPress ===
 add_action('admin_menu', 'ysc_admin_menu');
 add_action('admin_init', 'ysc_admin_init');
 
 function ysc_admin_menu() {
-    add_options_page('SmartCaptcha Login', 'SmartCaptcha Login', 'manage_options', 'ysc-login', 'ysc_options_page');
+    add_options_page(
+        'Yandex SmartCaptcha для входа и регистрации',
+        'SmartCaptcha Login',
+        'manage_options',
+        'ysc-login',
+        'ysc_options_page'
+    );
 }
 
 function ysc_admin_init() {
@@ -116,17 +161,25 @@ function ysc_admin_init() {
 function ysc_options_page() {
     ?>
     <div class="wrap">
-        <h2>Yandex SmartCaptcha для входа и регистрации</h2>
+        <h1>Yandex SmartCaptcha для входа и регистрации</h1>
         <form method="post" action="options.php">
             <?php settings_fields('ysc_login_options'); ?>
             <table class="form-table">
                 <tr>
-                    <th>Sitekey (публичный ключ)</th>
-                    <td><input type="text" name="ysc_sitekey" value="<?php echo esc_attr(get_option('ysc_sitekey')); ?>" size="60"></td>
+                    <th scope="row">Sitekey (публичный ключ)</th>
+                    <td>
+                        <input type="text" name="ysc_sitekey" value="<?php echo esc_attr(get_option('ysc_sitekey')); ?>" size="60" />
+                        <p class="description">
+                            Получите в <a href="https://console.cloud.yandex.ru/" target="_blank">Yandex Cloud Console</a>
+                        </p>
+                    </td>
                 </tr>
                 <tr>
-                    <th>Secret key (секретный ключ)</th>
-                    <td><input type="password" name="ysc_secret" value="<?php echo esc_attr(get_option('ysc_secret')); ?>" size="60"></td>
+                    <th scope="row">Secret key (секретный ключ)</th>
+                    <td>
+                        <input type="password" name="ysc_secret" value="<?php echo esc_attr(get_option('ysc_secret')); ?>" size="60" />
+                        <p class="description">Никогда не публикуйте этот ключ!</p>
+                    </td>
                 </tr>
             </table>
             <?php submit_button(); ?>
